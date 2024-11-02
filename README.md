@@ -78,7 +78,7 @@ class ChatConfig:
 ## 📁 Project Structure
 
 ```
-eli-therapybot/
+eli/
 ├── main.py           # Main bot implementation
 ├── config.py         # Configuration and persona settings
 ├── file_manager.py   # Session history management
