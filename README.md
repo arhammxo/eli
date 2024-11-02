@@ -26,8 +26,8 @@ anthropic
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/yourusername/eli-therapybot.git
-cd eli-therapybot
+git clone https://github.com/arhammxo/eli.git
+cd eli
 ```
 
 2. **Install dependencies**
@@ -147,6 +147,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-Made with ❤️ by [Your Name]
+Made with ❤️ by Arham
 
 *Remember: While Eli is designed to provide support, it is not a replacement for professional mental health services. If you're experiencing serious mental health issues, please seek help from a qualified mental health professional.*
