@@ -46,8 +46,16 @@ class TherapyBot:
             default_content=self.config.default_session_content
         )
         
+        # Load previous sessions first
         self.previous_sessions = self._load_previous_sessions()
-        self.has_previous_sessions = bool(self.previous_sessions.strip())
+        # Check if there's actual content beyond the default header
+        default_content = self.config.default_session_content.strip()
+        actual_content = self.previous_sessions.strip()
+        self.has_previous_sessions = bool(actual_content) and actual_content != default_content
+        
+        # Set session state based on previous sessions
+        self.session.state.is_first_session = not self.has_previous_sessions
+        self.logger.info(f"Session initialized - First session: {self.session.state.is_first_session}")
 
     def setup_logging(self):
         """Set up logging for the therapy bot"""
@@ -79,6 +87,34 @@ class TherapyBot:
             
         return result.data or ""
 
+    def _extract_name_from_response(self, response: str) -> Optional[str]:
+        """
+        Attempt to extract client's name from their response to name question.
+        
+        Args:
+            response: User's message containing potential name information
+            
+        Returns:
+            Optional[str]: Extracted name if found, None otherwise
+        """
+        # Look for common name-giving patterns
+        lower_response = response.lower()
+        name_indicators = ["i'm ", "im ", "name is ", "call me ", "i am "]
+        
+        for indicator in name_indicators:
+            if indicator in lower_response:
+                # Get the word following the indicator
+                idx = lower_response.index(indicator) + len(indicator)
+                name = response[idx:].split()[0].strip('.,!?')
+                return name.capitalize()
+        
+        # If no pattern found, return the first word (assuming direct name response)
+        first_word = response.split()[0].strip('.,!?')
+        if first_word and not first_word.lower() in ['hello', 'hi', 'hey', 'yes', 'no']:
+            return first_word.capitalize()
+            
+        return None
+
     def _get_system_prompt(self) -> str:
         """
         Generate the system prompt with enhanced personality guidance
@@ -86,6 +122,21 @@ class TherapyBot:
         Returns:
             str: Complete system prompt with personality and context
         """
+        # Ensure we're using the correct session type prompt
+        session_type = "FIRST_SESSION_INTRODUCTION" if self.session.state.is_first_session else "RETURNING_SESSION_GREETING"
+        
+        session_context = f"""
+        Previous Session Context:
+        Is First Session: {self.session.state.is_first_session}
+        Client Name: {self.session.state.client_name}
+        Previous Sessions: {self.previous_sessions if not self.session.state.is_first_session else "None"}
+        Current Session Type: {session_type}
+        
+        Session Instructions:
+        {TherapistPersona.FIRST_SESSION_INTRODUCTION if self.session.state.is_first_session 
+         else TherapistPersona.RETURNING_SESSION_GREETING}
+        """
+        
         return f"""
         {TherapistPersona.PERSONALITY}
         
@@ -93,14 +144,12 @@ class TherapyBot:
         
         {TherapistPersona.AUTHENTICITY_MARKERS}
         
-        Previous Session Context:
-        You have access to and should naturally reference these previous sessions when relevant:
-        {self.previous_sessions}
+        {session_context}
         
         Remember to:
         - Maintain your warm, authentic presence throughout
         - Show natural thoughtfulness in your responses
-        - Reference past sessions in a natural, caring way
+        - {'Ask for their name warmly' if self.session.state.is_first_session else 'Use their name naturally'}
         - Keep your therapeutic wisdom wrapped in genuine warmth
         
         {TherapistPersona.RULES}
@@ -137,19 +186,25 @@ class TherapyBot:
             str: Initial session greeting
         """
         self.session = TherapySession()
+        # Ensure first session state is properly set
+        self.session.state.is_first_session = not self.has_previous_sessions
         
-        prompt = """
-        Begin a new therapy session with genuine warmth and presence. 
-        If there are previous sessions, acknowledge them naturally while focusing on 
-        the present moment. Show your authentic therapeutic style in welcoming them 
-        to share whatever feels important today.
-        
-        Remember to:
-        - Start with genuine warmth
-        - Show thoughtful presence
-        - Create a safe, inviting space
-        - Use natural, caring language
-        """
+        if self.session.state.is_first_session:
+            prompt = """
+            Begin a new first-time therapy session with genuine warmth and presence.
+            This is a first-time session, so:
+            - Introduce yourself as Eli
+            - Ask for their name warmly
+            - Create a welcoming, safe space
+            - Explain how the sessions work
+            - Use natural, caring language
+            """
+        else:
+            prompt = """
+            Begin a returning therapy session with genuine warmth and presence.
+            Acknowledge previous sessions while focusing on the present moment.
+            Show your authentic therapeutic style in welcoming them back.
+            """
         
         response = self._generate_response(prompt)
         self.session.add_interaction("New session started", response)
@@ -168,14 +223,28 @@ class TherapyBot:
         if not self.session.state.is_active:
             return "Session has ended. Please start a new session.", True
 
+        # Try to extract name if this is first session and we don't have it yet
+        if (self.session.state.is_first_session and 
+            not self.session.state.client_name and 
+            len(self.session.state.history) > 0):  # Not the first message
+            extracted_name = self._extract_name_from_response(user_message)
+            if extracted_name:
+                self.session.state.client_name = extracted_name
+
+        # Update prompt with current context
         base_prompt = f"""
-        Current session context: {self.session.state.history}
+        Current session context:
+        Is First Session: {self.session.state.is_first_session}
+        Client Name: {self.session.state.client_name}
+        Session History: {self.session.state.history}
         
         Remember to:
         - Respond with genuine therapeutic warmth
         - Show thoughtful consideration
         - Reference previous context naturally when relevant
         - Maintain your authentic presence
+        {f'- Use their name ({self.session.state.client_name}) naturally and occasionally' 
+          if self.session.state.client_name else ''}
         
         Current client share: {user_message}
         
@@ -192,6 +261,8 @@ class TherapyBot:
             - Shows genuine care
             - Leaves the door open for future sessions
             - Maintains your authentic therapeutic presence
+            {f'- Uses their name ({self.session.state.client_name}) naturally in farewell'
+              if self.session.state.client_name else ''}
             
             Their closing message: {user_message}
             """
@@ -210,6 +281,7 @@ class TherapyBot:
             updated_history = (
                 self.previous_sessions + 
                 f"\n\n--- Session: {self.session.start_time} ---\n" +
+                f"Client Name: {self.session.state.client_name}\n" +
                 self.session.state.history
             )
             result = self.file_manager.write_file(
@@ -237,12 +309,13 @@ def main():
     # Main conversation loop
     while True:
         try:
+            print("\n> ", end='')  # Add the input line prompt
             user_input = input().strip()
             if not user_input:
                 continue
 
             response, session_ended = bot.chat(user_input)
-            print(response)
+            print(f"\n{response}")  # Add newline before response
             
             if session_ended:
                 print("\n=== Session Ended ===\n")
