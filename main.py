@@ -53,8 +53,14 @@ class TherapyBot:
         actual_content = self.previous_sessions.strip()
         self.has_previous_sessions = bool(actual_content) and actual_content != default_content
         
+        # Extract previous client name if it exists
+        self.previous_client_name = self._extract_previous_client_name()
+        
         # Set session state based on previous sessions
         self.session.state.is_first_session = not self.has_previous_sessions
+        if not self.session.state.is_first_session:
+            self.session.state.client_name = self.previous_client_name
+            
         self.logger.info(f"Session initialized - First session: {self.session.state.is_first_session}")
 
     def setup_logging(self):
@@ -86,6 +92,20 @@ class TherapyBot:
             self.logger.info(f"Created new session file: {self.config.session_file}")
             
         return result.data or ""
+
+    def _extract_previous_client_name(self) -> Optional[str]:
+        """Extract client name from previous sessions if it exists."""
+        if not self.previous_sessions:
+            return None
+            
+        import re
+        # Look for the most recent client name entry
+        matches = re.findall(r"Client Name: (.*?)\n", self.previous_sessions)
+        if matches:
+            last_name = matches[-1].strip()
+            return last_name if last_name != "None" else None
+            
+        return None
 
     def _extract_name_from_response(self, response: str) -> Optional[str]:
         """
@@ -189,6 +209,10 @@ class TherapyBot:
         # Ensure first session state is properly set
         self.session.state.is_first_session = not self.has_previous_sessions
         
+        # Set client name from previous sessions if this isn't a first session
+        if not self.session.state.is_first_session:
+            self.session.state.client_name = self.previous_client_name
+        
         if self.session.state.is_first_session:
             prompt = """
             Begin a new first-time therapy session with genuine warmth and presence.
@@ -200,8 +224,9 @@ class TherapyBot:
             - Use natural, caring language
             """
         else:
-            prompt = """
+            prompt = f"""
             Begin a returning therapy session with genuine warmth and presence.
+            The client's name is {self.previous_client_name}.
             Acknowledge previous sessions while focusing on the present moment.
             Show your authentic therapeutic style in welcoming them back.
             """
@@ -231,7 +256,30 @@ class TherapyBot:
             if extracted_name:
                 self.session.state.client_name = extracted_name
 
-        # Update prompt with current context
+        # Check for goodbye indicators
+        goodbye_indicators = ['bye', 'goodbye', 'see you', 'farewell', 'going now', 'leave']
+        is_goodbye = any(indicator in user_message.lower() for indicator in goodbye_indicators)
+
+        if is_goodbye:
+            goodbye_prompt = f"""
+            The client is saying goodbye.
+            Create a warm, caring goodbye that:
+            - Acknowledges their participation
+            - Shows genuine care
+            - Leaves the door open for future sessions
+            - Maintains your authentic therapeutic presence
+            {f'- Uses their name ({self.session.state.client_name}) naturally in farewell'
+              if self.session.state.client_name else ''}
+            
+            Their closing message: {user_message}
+            """
+            goodbye_message = self._generate_response(goodbye_prompt)
+            self.session.add_interaction(user_message, goodbye_message)
+            self._save_session()
+            self.session.clear()
+            return goodbye_message, True
+
+        # Regular conversation handling
         base_prompt = f"""
         Current session context:
         Is First Session: {self.session.state.is_first_session}
@@ -252,38 +300,26 @@ class TherapyBot:
         """
 
         response = self._generate_response(base_prompt)
-
-        if response == "null":
-            goodbye_prompt = f"""
-            The client has indicated they'd like to end our session.
-            Create a warm, caring goodbye that:
-            - Acknowledges their participation
-            - Shows genuine care
-            - Leaves the door open for future sessions
-            - Maintains your authentic therapeutic presence
-            {f'- Uses their name ({self.session.state.client_name}) naturally in farewell'
-              if self.session.state.client_name else ''}
-            
-            Their closing message: {user_message}
-            """
-            goodbye_message = self._generate_response(goodbye_prompt)
-            self.session.add_interaction(user_message, goodbye_message)
-            self._save_session()
-            self.session.clear()
-            return goodbye_message, True
-
         self.session.add_interaction(user_message, response)
         return response, False
 
     def _save_session(self):
         """Save the current session to the history file"""
         try:
+            # Use previous client name if current session doesn't have one
+            client_name = (
+                self.session.state.client_name or 
+                self.previous_client_name or 
+                "Unknown"  # Use "Unknown" instead of None
+            )
+            
             updated_history = (
                 self.previous_sessions + 
                 f"\n\n--- Session: {self.session.start_time} ---\n" +
-                f"Client Name: {self.session.state.client_name}\n" +
+                f"Client Name: {client_name}\n" +
                 self.session.state.history
             )
+            
             result = self.file_manager.write_file(
                 self.config.session_file, 
                 updated_history
